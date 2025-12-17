@@ -1,14 +1,55 @@
-// // NetworkMessages.cs  (одинаковый в Server и Client проектах)
+// // // NetworkMessages.cs  (одинаковый в Server и Client проектах)
+// // using Mirror;
+// // using UnityEngine;
+
+// // public struct GraphMessage : NetworkMessage
+// // {
+// //     public int[] nodeIds;        // parallel arrays
+// //     public Vector2[] positions;
+// //     public int[] scores;
+// //     public byte[] owners;        // 0 = neutral, 1 = player1 (red), 2 = player2 (blue)
+// //     public int[] edgeFrom;       // edges as arrays of pairs
+// //     public int[] edgeTo;
+// // }
+
+// // public struct SpawnNodeMessage : NetworkMessage
+// // {
+// //     public int nodeId;
+// //     public Vector2 position;
+// //     public int initialScore;
+// //     public byte owner;
+// // }
+
+// // public struct ClickMessage : NetworkMessage
+// // {
+// //     public int nodeId;
+// // }
+
+// // public struct NodeUpdateMessage : NetworkMessage
+// // {
+// //     public int nodeId;
+// //     public int score;
+// //     public byte owner; // 0/1/2
+// // }
+
+// // public struct PlayerHudMessage : NetworkMessage
+// // {
+// //     public int gold;
+// //     public int ownedCount;
+// //     public byte playerOwnerId; // 1 или 2 (чтобы клиент поставил цвет)
+// // }
+
+
 // using Mirror;
 // using UnityEngine;
 
 // public struct GraphMessage : NetworkMessage
 // {
-//     public int[] nodeIds;        // parallel arrays
+//     public int[] nodeIds;
 //     public Vector2[] positions;
 //     public int[] scores;
 //     public byte[] owners;        // 0 = neutral, 1 = player1 (red), 2 = player2 (blue)
-//     public int[] edgeFrom;       // edges as arrays of pairs
+//     public int[] edgeFrom;
 //     public int[] edgeTo;
 // }
 
@@ -32,14 +73,16 @@
 //     public byte owner; // 0/1/2
 // }
 
-// public struct PlayerHudMessage : NetworkMessage
+// // --- NEW: per-player stats message ---
+// public struct PlayerStatsMessage : NetworkMessage
 // {
+//     public byte ownerId;    // 1 or 2
 //     public int gold;
-//     public int ownedCount;
-//     public byte playerOwnerId; // 1 или 2 (чтобы клиент поставил цвет)
+//     public int ownedNodes;
 // }
 
 
+// NetworkMessages.cs  (shared, must be identical in client and server)
 using Mirror;
 using UnityEngine;
 
@@ -51,14 +94,6 @@ public struct GraphMessage : NetworkMessage
     public byte[] owners;        // 0 = neutral, 1 = player1 (red), 2 = player2 (blue)
     public int[] edgeFrom;
     public int[] edgeTo;
-}
-
-public struct SpawnNodeMessage : NetworkMessage
-{
-    public int nodeId;
-    public Vector2 position;
-    public int initialScore;
-    public byte owner;
 }
 
 public struct ClickMessage : NetworkMessage
@@ -73,10 +108,30 @@ public struct NodeUpdateMessage : NetworkMessage
     public byte owner; // 0/1/2
 }
 
-// --- NEW: per-player stats message ---
 public struct PlayerStatsMessage : NetworkMessage
 {
     public byte ownerId;    // 1 or 2
     public int gold;
     public int ownedNodes;
+}
+
+// --- new: purchase messages ---
+public struct DirectedEdgePurchaseMessage : NetworkMessage
+{
+    public int fromNodeId;
+    public int toNodeId;
+}
+
+public struct DirectedEdgeMessage : NetworkMessage
+{
+    public int fromNodeId;
+    public int toNodeId;
+    public byte owner; // who created it (1 or 2) — used to color it
+}
+
+public struct PurchaseResultMessage : NetworkMessage
+{
+    public bool success;
+    public string reason; // optional human text: "not enough gold", etc.
+    public int newGold;   // player's new gold after purchase (if success)
 }
