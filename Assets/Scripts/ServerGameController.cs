@@ -1293,6 +1293,13 @@ public class ServerGameController : MonoBehaviour
     // player resources (by index 0..maxPlayers-1)
     private int[] playerGold;
     private int[] playerOwnedCount;
+    private int[] playerClickPower;      // сила клика каждого игрока
+    private float[] playerGoldMultiplier; // множитель генерации золота
+    private bool[] playerEliminated;      // исключен ли игрок из игры
+
+    // game state
+    private byte gameState = 0;  // 0=Playing, 1=Player1Won, 2=Player2Won
+    private byte winnerOwnerId = 0;
 
     Coroutine goldCoroutine = null;
 
@@ -1301,6 +1308,17 @@ public class ServerGameController : MonoBehaviour
         // prepare arrays
         playerGold = new int[maxPlayers];
         playerOwnedCount = new int[maxPlayers];
+        playerClickPower = new int[maxPlayers];
+        playerGoldMultiplier = new float[maxPlayers];
+        playerEliminated = new bool[maxPlayers];
+        
+        // initialize default values
+        for (int i = 0; i < maxPlayers; i++)
+        {
+            playerClickPower[i] = 1;
+            playerGoldMultiplier[i] = 1.0f;
+            playerEliminated[i] = false;
+        }
     }
 
     // Called from CustomNetworkManagerServer.OnStartServer()
@@ -1308,7 +1326,8 @@ public class ServerGameController : MonoBehaviour
     {
         // register click handler
         NetworkServer.RegisterHandler<ClickMessage>(OnClickMessageReceived, false);
-        Debug.Log("[ServerGameController] ClickMessage handler registered");
+        NetworkServer.RegisterHandler<BuyBonusMessage>(OnBuyBonusReceived, false);
+        Debug.Log("[ServerGameController] ClickMessage and BuyBonusMessage handlers registered");
     }
 
     // Called from CustomNetworkManagerServer.OnServerConnect
@@ -1349,9 +1368,12 @@ public class ServerGameController : MonoBehaviour
 
         // send initial PlayerStatsMessage telling the client who they are (ownerId)
         byte ownerId = (byte)(idx == 0 ? 1 : 2);
-        SendPlayerStatsToConn(conn, ownerId, playerGold[idx], GetOwnedCountByIndex(idx));
+        SendPlayerStatsToConn(conn, ownerId, playerGold[idx], GetOwnedCountByIndex(idx), playerClickPower[idx]);
 
         Debug.Log($"[Server] Assigned idx {idx} to conn {conn.connectionId} ownerId={ownerId}");
+        
+        // send current game state
+        SendGameStateToConn(conn);
 
         // optionally broadcast current stats to all players
         BroadcastAllPlayerStats();
@@ -1557,15 +1579,27 @@ public class ServerGameController : MonoBehaviour
             if (indexToConn.TryGetValue(idx, out var conn))
             {
                 byte ownerId = (byte)(idx == 0 ? 1 : 2);
-                SendPlayerStatsToConn(conn, ownerId, playerGold[idx], GetOwnedCountByIndex(idx));
+                SendPlayerStatsToConn(conn, ownerId, playerGold[idx], GetOwnedCountByIndex(idx), playerClickPower[idx]);
             }
         }
     }
 
-    private void SendPlayerStatsToConn(NetworkConnectionToClient conn, byte ownerId, int gold, int ownedNodes)
+    private void SendPlayerStatsToConn(NetworkConnectionToClient conn, byte ownerId, int gold, int ownedNodes, int clickPower)
     {
-        PlayerStatsMessage m = new PlayerStatsMessage { ownerId = ownerId, gold = gold, ownedNodes = ownedNodes };
+        PlayerStatsMessage m = new PlayerStatsMessage { ownerId = ownerId, gold = gold, ownedNodes = ownedNodes, clickPower = clickPower };
         conn.Send(m);
+    }
+    
+    private void SendGameStateToConn(NetworkConnectionToClient conn)
+    {
+        GameStateMessage msg = new GameStateMessage { gameState = gameState, winnerOwnerId = winnerOwnerId };
+        conn.Send(msg);
+    }
+    
+    private void BroadcastGameState()
+    {
+        GameStateMessage msg = new GameStateMessage { gameState = gameState, winnerOwnerId = winnerOwnerId };
+        NetworkServer.SendToAll(msg);
     }
 
     // ---------------- clicks ----------------
@@ -1605,10 +1639,18 @@ public class ServerGameController : MonoBehaviour
             Debug.Log($"[Server] Click rejected: conn {conn.connectionId} (player {playerOwnerId}) cannot click node {nodeId}");
             return;
         }
+        
+        // check if game is over
+        if (gameState != 0)
+        {
+            Debug.Log($"[Server] Click rejected: game is over");
+            return;
+        }
 
-        // apply change
-        if (playerOwnerId == 1) nodeScores[nodeId] += 1;
-        else nodeScores[nodeId] -= 1;
+        // apply change with click power
+        int clickPower = playerClickPower[pIndex];
+        if (playerOwnerId == 1) nodeScores[nodeId] += clickPower;
+        else nodeScores[nodeId] -= clickPower;
 
         // recalc owner
         int sc = nodeScores[nodeId];
@@ -1624,6 +1666,178 @@ public class ServerGameController : MonoBehaviour
 
         // after update maybe update owned counts and send stats
         UpdateOwnedCountsAndNotify();
+        
+        // check for victory condition
+        CheckVictoryCondition();
+    }
+
+    // ---------------- bonus system ----------------
+    private void OnBuyBonusReceived(NetworkConnectionToClient conn, BuyBonusMessage msg)
+    {
+        if (!connIndex.TryGetValue(conn.connectionId, out int pIndex))
+        {
+            SendBonusResponse(conn, false, "Игрок не найден");
+            return;
+        }
+        
+        if (gameState != 0)
+        {
+            SendBonusResponse(conn, false, "Игра окончена");
+            return;
+        }
+
+        byte playerOwnerId = (byte)(pIndex == 0 ? 1 : 2);
+        
+        // Bonus types: 0=IncreaseClickPower, 1=BoostNodeScore, 2=BoostGoldGen, 3=AttackEnemy
+        switch (msg.bonusType)
+        {
+            case 0: // Increase Click Power (cost: 50)
+                if (playerGold[pIndex] >= 50)
+                {
+                    playerGold[pIndex] -= 50;
+                    playerClickPower[pIndex] += 1;
+                    SendBonusResponse(conn, true, $"Сила клика увеличена до {playerClickPower[pIndex]}!");
+                    UpdateOwnedCountsAndNotify();
+                }
+                else
+                {
+                    SendBonusResponse(conn, false, "Недостаточно золота (требуется 50)");
+                }
+                break;
+                
+            case 1: // Boost Own Node Score (cost: 30)
+                if (msg.targetNodeId < 0 || !nodePositions.ContainsKey(msg.targetNodeId))
+                {
+                    SendBonusResponse(conn, false, "Неверный узел");
+                    return;
+                }
+                if (nodeOwners[msg.targetNodeId] != playerOwnerId)
+                {
+                    SendBonusResponse(conn, false, "Это не ваш узел");
+                    return;
+                }
+                if (playerGold[pIndex] >= 30)
+                {
+                    playerGold[pIndex] -= 30;
+                    int boost = 5;
+                    if (playerOwnerId == 1) nodeScores[msg.targetNodeId] += boost;
+                    else nodeScores[msg.targetNodeId] -= boost;
+                    
+                    NodeUpdateMessage um = new NodeUpdateMessage { 
+                        nodeId = msg.targetNodeId, 
+                        score = nodeScores[msg.targetNodeId], 
+                        owner = nodeOwners[msg.targetNodeId] 
+                    };
+                    NetworkServer.SendToAll(um);
+                    SendBonusResponse(conn, true, $"Узел усилен на {boost}!");
+                    UpdateOwnedCountsAndNotify();
+                }
+                else
+                {
+                    SendBonusResponse(conn, false, "Недостаточно золота (требуется 30)");
+                }
+                break;
+                
+            case 2: // Boost Gold Generation (cost: 100)
+                if (playerGold[pIndex] >= 100)
+                {
+                    playerGold[pIndex] -= 100;
+                    playerGoldMultiplier[pIndex] += 0.5f;
+                    SendBonusResponse(conn, true, $"Генерация золота увеличена до x{playerGoldMultiplier[pIndex]:F1}!");
+                    UpdateOwnedCountsAndNotify();
+                }
+                else
+                {
+                    SendBonusResponse(conn, false, "Недостаточно золота (требуется 100)");
+                }
+                break;
+                
+            case 3: // Attack Enemy Node (cost: 40)
+                if (msg.targetNodeId < 0 || !nodePositions.ContainsKey(msg.targetNodeId))
+                {
+                    SendBonusResponse(conn, false, "Неверный узел");
+                    return;
+                }
+                byte targetOwner = nodeOwners[msg.targetNodeId];
+                if (targetOwner == 0 || targetOwner == playerOwnerId)
+                {
+                    SendBonusResponse(conn, false, "Выберите вражеский узел");
+                    return;
+                }
+                if (playerGold[pIndex] >= 40)
+                {
+                    playerGold[pIndex] -= 40;
+                    int damage = 7;
+                    if (playerOwnerId == 1) nodeScores[msg.targetNodeId] += damage;
+                    else nodeScores[msg.targetNodeId] -= damage;
+                    
+                    // recalc owner
+                    int sc = nodeScores[msg.targetNodeId];
+                    byte newOwner = 0;
+                    if (sc > 0) newOwner = 1;
+                    else if (sc < 0) newOwner = 2;
+                    nodeOwners[msg.targetNodeId] = newOwner;
+                    
+                    NodeUpdateMessage um = new NodeUpdateMessage { 
+                        nodeId = msg.targetNodeId, 
+                        score = nodeScores[msg.targetNodeId], 
+                        owner = newOwner 
+                    };
+                    NetworkServer.SendToAll(um);
+                    SendBonusResponse(conn, true, $"Атака нанесла урон {damage}!");
+                    UpdateOwnedCountsAndNotify();
+                    CheckVictoryCondition();
+                }
+                else
+                {
+                    SendBonusResponse(conn, false, "Недостаточно золота (требуется 40)");
+                }
+                break;
+                
+            default:
+                SendBonusResponse(conn, false, "Неизвестный тип бонуса");
+                break;
+        }
+    }
+    
+    private void SendBonusResponse(NetworkConnectionToClient conn, bool success, string message)
+    {
+        BonusResponseMessage resp = new BonusResponseMessage { success = success, message = message };
+        conn.Send(resp);
+    }
+    
+    // ---------------- victory condition ----------------
+    private void CheckVictoryCondition()
+    {
+        if (gameState != 0) return; // game already over
+        
+        // count owned nodes for each player
+        int player1Nodes = 0;
+        int player2Nodes = 0;
+        
+        foreach (var kv in nodeOwners)
+        {
+            if (kv.Value == 1) player1Nodes++;
+            else if (kv.Value == 2) player2Nodes++;
+        }
+        
+        // check if any player lost all nodes
+        if (player1Nodes == 0 && player2Nodes > 0)
+        {
+            gameState = 2; // Player 2 won
+            winnerOwnerId = 2;
+            playerEliminated[0] = true;
+            Debug.Log("[Server] Player 2 WON! Player 1 eliminated.");
+            BroadcastGameState();
+        }
+        else if (player2Nodes == 0 && player1Nodes > 0)
+        {
+            gameState = 1; // Player 1 won
+            winnerOwnerId = 1;
+            playerEliminated[1] = true;
+            Debug.Log("[Server] Player 1 WON! Player 2 eliminated.");
+            BroadcastGameState();
+        }
     }
 
     // ---------------- gold tick ----------------
@@ -1646,9 +1860,17 @@ public class ServerGameController : MonoBehaviour
                 byte owner = kv.Value;
                 if (owner == 0) continue;
                 int ownerIdx = (owner == 1) ? 0 : 1;
+                
+                // skip if player eliminated
+                if (playerEliminated[ownerIdx]) continue;
+                
                 int sc = nodeScores.ContainsKey(nodeId) ? nodeScores[nodeId] : 0;
                 int gain = goldPerNodeBase + Mathf.Abs(sc) / 5; // example formula
                 gain = Mathf.Clamp(gain, 0, maxGoldPerNodePerTick);
+                
+                // apply gold multiplier bonus
+                gain = Mathf.RoundToInt(gain * playerGoldMultiplier[ownerIdx]);
+                
                 playerGold[ownerIdx] += gain;
             }
 
@@ -1658,7 +1880,7 @@ public class ServerGameController : MonoBehaviour
                 if (indexToConn.TryGetValue(idx, out var conn))
                 {
                     byte ownerId = (byte)(idx == 0 ? 1 : 2);
-                    SendPlayerStatsToConn(conn, ownerId, playerGold[idx], GetOwnedCountByIndex(idx));
+                    SendPlayerStatsToConn(conn, ownerId, playerGold[idx], GetOwnedCountByIndex(idx), playerClickPower[idx]);
                 }
             }
         }
@@ -1682,7 +1904,7 @@ public class ServerGameController : MonoBehaviour
             if (indexToConn.TryGetValue(idx, out var conn))
             {
                 byte ownerId = (byte)(idx == 0 ? 1 : 2);
-                SendPlayerStatsToConn(conn, ownerId, playerGold[idx], playerOwnedCount[idx]);
+                SendPlayerStatsToConn(conn, ownerId, playerGold[idx], playerOwnedCount[idx], playerClickPower[idx]);
             }
         }
     }

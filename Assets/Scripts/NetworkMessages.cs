@@ -79,4 +79,26 @@ public struct PlayerStatsMessage : NetworkMessage
     public byte ownerId;    // 1 or 2
     public int gold;
     public int ownedNodes;
+    public int clickPower;  // сила клика игрока
+}
+
+// --- Bonus purchase message ---
+public struct BuyBonusMessage : NetworkMessage
+{
+    public int bonusType;   // 0=IncreaseClickPower, 1=BoostNodeScore, 2=BoostGoldGen, 3=AttackEnemy
+    public int targetNodeId; // -1 если бонус не требует цели
+}
+
+// --- Bonus purchase response ---
+public struct BonusResponseMessage : NetworkMessage
+{
+    public bool success;
+    public string message;
+}
+
+// --- Game state message ---
+public struct GameStateMessage : NetworkMessage
+{
+    public byte gameState;   // 0=Playing, 1=Player1Won, 2=Player2Won
+    public byte winnerOwnerId; // 1 or 2
 }
