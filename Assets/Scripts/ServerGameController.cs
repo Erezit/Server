@@ -1,6 +1,3 @@
-
-
-// ServerGameController.cs (server project)
 using System.Collections;
 using System.Collections.Generic;
 using UnityEngine;
@@ -20,22 +17,19 @@ public class ServerGameController : MonoBehaviour
     [Header("Economy")]
     public float goldTickInterval = 1.0f;
     public int goldPerNodeBase = 1;
-    public int directedEdgeCost = 100; // cost to buy directed edge
+    public int directedEdgeCost = 100;
 
-    // internals
     private bool graphGenerated = false;
     private int nextNodeId = 0;
 
     private readonly Dictionary<int, Vector2> nodePositions = new Dictionary<int, Vector2>();
     private readonly Dictionary<int, int> nodeScores = new Dictionary<int, int>();
-    private readonly Dictionary<int, byte> nodeOwners = new Dictionary<int, byte>(); // 0 neutral,1 player1,2 player2
+    private readonly Dictionary<int, byte> nodeOwners = new Dictionary<int, byte>();
     private readonly Dictionary<int, List<int>> adjacency = new Dictionary<int, List<int>>();
 
-    // directed edges FROM -> TO (owner matters)
     private readonly Dictionary<int, HashSet<int>> directedEdges = new Dictionary<int, HashSet<int>>();
 
-    // connection mapping
-    private readonly Dictionary<int, int> connIndex = new Dictionary<int, int>(); // connId -> index
+    private readonly Dictionary<int, int> connIndex = new Dictionary<int, int>();
     private readonly Dictionary<int, NetworkConnectionToClient> indexToConn = new Dictionary<int, NetworkConnectionToClient>();
 
     private int[] playerGold;
@@ -50,13 +44,12 @@ public class ServerGameController : MonoBehaviour
         playerOwnedCount = new int[maxPlayers];
     }
 
-    // called by CustomNetworkManagerServer.OnStartServer()
     public void OnServerStarted()
     {
         NetworkServer.RegisterHandler<ClickMessage>(OnClickMessageReceived, false);
         NetworkServer.RegisterHandler<DirectedEdgePurchaseMessage>(OnDirectedEdgePurchaseReceived, false);
         Debug.Log("[ServerGameController] Handlers registered. Waiting for players...");
-        // do not start gold coroutine here — start on first connected player
+
     }
 
     public void HandleClientConnected(NetworkConnectionToClient conn)
@@ -81,14 +74,11 @@ public class ServerGameController : MonoBehaviour
             Debug.Log("[Server] Graph generated once.");
         }
 
-        // send full graph to connecting client
         SendGraphToClient(conn);
 
-        // send initial PlayerStats with ownerId and current gold/ownedNodes
         byte ownerId = (byte)(idx == 0 ? 1 : 2);
         SendPlayerStatsToConn(conn, ownerId, playerGold[idx], GetOwnedCountByIndex(idx));
 
-        // start gold coroutine on first player connect
         if (!goldStarted)
         {
             goldStarted = true;
@@ -96,7 +86,6 @@ public class ServerGameController : MonoBehaviour
             Debug.Log("[ServerGameController] Gold coroutine started");
         }
 
-        // notify everyone about stats (optional)
         BroadcastAllPlayerStats();
     }
 
@@ -110,7 +99,6 @@ public class ServerGameController : MonoBehaviour
         }
     }
 
-    // ------------------- generation -------------------
     private void GenerateGraph()
     {
         nodePositions.Clear();
@@ -138,14 +126,12 @@ public class ServerGameController : MonoBehaviour
             directedEdges[id] = new HashSet<int>();
         }
 
-        // build MST + extra edges (same as before)
         List<(int a, int b, float dist)> allPairs = new List<(int, int, float)>();
         var ids = new List<int>(nodePositions.Keys);
         for (int i = 0; i < ids.Count; i++)
             for (int j = i + 1; j < ids.Count; j++)
                 allPairs.Add((ids[i], ids[j], Vector2.Distance(nodePositions[ids[i]], nodePositions[ids[j]])));
 
-        // Prim
         HashSet<int> inTree = new HashSet<int>();
         List<(int a, int b)> edges = new List<(int a, int b)>();
         inTree.Add(ids[0]);
@@ -200,7 +186,6 @@ public class ServerGameController : MonoBehaviour
             if (!adjacency[e.b].Contains(e.a)) adjacency[e.b].Add(e.a);
         }
 
-        // pick seeds randomly and set owners
         int seedA = ids[Random.Range(0, ids.Count)];
         int seedB = seedA;
         float minSeedDist = fieldRadius * 0.6f;
@@ -236,7 +221,6 @@ public class ServerGameController : MonoBehaviour
         return seed;
     }
 
-    // ---------------- networking: send graph / stuff ----------------
     private void SendGraphToClient(NetworkConnectionToClient conn)
     {
         int n = nodePositions.Count;
@@ -286,13 +270,12 @@ public class ServerGameController : MonoBehaviour
         conn.Send(gm);
         Debug.Log($"[Server] Sent GraphMessage to connId={conn.connectionId} nodes={n} edges={edgeFrom.Count}");
 
-        // Also send existing directed edges to this client
         foreach (var kv in directedEdges)
         {
             int a = kv.Key;
             foreach (int b in kv.Value)
             {
-                // determine owner color (owner of source node at the moment)
+
                 byte owner = nodeOwners.ContainsKey(a) ? nodeOwners[a] : (byte)0;
                 DirectedEdgeMessage dem = new DirectedEdgeMessage { fromNodeId = a, toNodeId = b, owner = owner };
                 conn.Send(dem);
@@ -325,7 +308,6 @@ public class ServerGameController : MonoBehaviour
         conn.Send(m);
     }
 
-    // ---------------- clicks and purchase handling ----------------
     private void OnClickMessageReceived(NetworkConnectionToClient conn, ClickMessage msg)
     {
         int nodeId = msg.nodeId;
@@ -342,12 +324,12 @@ public class ServerGameController : MonoBehaviour
         byte playerOwnerId = (byte)((pIndex == 0) ? 1 : 2);
 
         bool allowed = false;
-        // allowed if player owns this node
+
         if (nodeOwners.TryGetValue(nodeId, out byte curOwner) && curOwner == playerOwnerId) allowed = true;
-        // allowed if any neighbor is owned
+
         foreach (int nbr in adjacency[nodeId])
             if (nodeOwners.TryGetValue(nbr, out byte o) && o == playerOwnerId) { allowed = true; break; }
-        // allowed if there exists directed edge FROM any player's owned node to nodeId (but only if that source is owned by this player)
+
         foreach (var kv in directedEdges)
         {
             int src = kv.Key;
@@ -362,28 +344,23 @@ public class ServerGameController : MonoBehaviour
             return;
         }
 
-        // change score (+/- depending on owner)
         if (playerOwnerId == 1) nodeScores[nodeId] += 1;
         else nodeScores[nodeId] -= 1;
 
-        // recalc owner
         int sc = nodeScores[nodeId];
         byte newOwner = 0;
         if (sc > 0) newOwner = 1;
         else if (sc < 0) newOwner = 2;
         nodeOwners[nodeId] = newOwner;
 
-        // notify all clients
         NodeUpdateMessage um = new NodeUpdateMessage { nodeId = nodeId, score = nodeScores[nodeId], owner = newOwner };
         NetworkServer.SendToAll(um);
 
         Debug.Log($"[Server] Node {nodeId} updated by conn {conn.connectionId} -> score={nodeScores[nodeId]} owner={newOwner}");
 
-        // update owned counts and notify players
         UpdateOwnedCountsAndNotify();
     }
 
-    // Purchase handler: client sends from/to selection
     private void OnDirectedEdgePurchaseReceived(NetworkConnectionToClient conn, DirectedEdgePurchaseMessage msg)
     {
         if (!connIndex.TryGetValue(conn.connectionId, out int pIndex))
@@ -397,61 +374,51 @@ public class ServerGameController : MonoBehaviour
         int from = msg.fromNodeId;
         int to = msg.toNodeId;
 
-        // validations
         if (!nodePositions.ContainsKey(from) || !nodePositions.ContainsKey(to))
         {
             conn.Send(new PurchaseResultMessage { success = false, reason = "node not found" });
             return;
         }
 
-        // must own source node
         if (!nodeOwners.ContainsKey(from) || nodeOwners[from] != playerOwnerId)
         {
             conn.Send(new PurchaseResultMessage { success = false, reason = "you must own source node" });
             return;
         }
 
-        // cannot be same node
         if (from == to)
         {
             conn.Send(new PurchaseResultMessage { success = false, reason = "from and to must differ" });
             return;
         }
 
-        // cannot already exist directed edge
         if (directedEdges.TryGetValue(from, out var set) && set.Contains(to))
         {
             conn.Send(new PurchaseResultMessage { success = false, reason = "edge already exists" });
             return;
         }
 
-        // check funds
         if (playerGold[pIndex] < directedEdgeCost)
         {
             conn.Send(new PurchaseResultMessage { success = false, reason = "not enough gold" });
             return;
         }
 
-        // OK: deduct gold, add directed edge, broadcast
         playerGold[pIndex] -= directedEdgeCost;
         directedEdges[from].Add(to);
 
-        // broadcast edge to everyone
         BroadcastDirectedEdge(from, to, playerOwnerId);
 
-        // notify purchaser with success + newGold
         conn.Send(new PurchaseResultMessage { success = true, reason = "ok", newGold = playerGold[pIndex] });
 
         Debug.Log($"[Server] Player idx {pIndex} (conn {conn.connectionId}) bought directed edge {from}->{to} for {directedEdgeCost} gold, remaining {playerGold[pIndex]}");
 
-        // update owned counts and send stats
         UpdateOwnedCountsAndNotify();
     }
 
-    // ---------------- gold tick ----------------
     IEnumerator GoldTickRoutine()
     {
-        // allow one frame
+
         yield return null;
 
         while (true)
@@ -460,7 +427,6 @@ public class ServerGameController : MonoBehaviour
 
             if (!NetworkServer.active) continue;
 
-            // add gold per owned node
             for (int idx = 0; idx < maxPlayers; idx++) { if (playerGold.Length <= idx) continue; }
 
             foreach (var kv in nodeOwners)
@@ -474,7 +440,6 @@ public class ServerGameController : MonoBehaviour
                 playerGold[idx] += Mathf.Clamp(gain, 0, 1000);
             }
 
-            // send updated stats to connected players
             for (int idx = 0; idx < maxPlayers; idx++)
             {
                 if (indexToConn.TryGetValue(idx, out var conn))
@@ -513,7 +478,6 @@ public class ServerGameController : MonoBehaviour
         return cnt;
     }
 
-    // ---------------- utilities ----------------
     private Vector2 VogelPoint(int i, float scale)
     {
         float goldenAngle = Mathf.PI * (3f - Mathf.Sqrt(5f));
