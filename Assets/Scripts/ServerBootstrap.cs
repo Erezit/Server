@@ -1,4 +1,3 @@
-// Assets/Scripts/ServerBootstrap.cs
 using UnityEngine;
 using Mirror;
 
